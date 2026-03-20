@@ -66,15 +66,17 @@ export class RelayClient implements EdenTransport {
 
       ws.once("open", () => {
         ws.send(JSON.stringify({ type: "identify", peerId: this.peerId }));
-        for (const msg of this.queue) this.relay(msg);
-        this.queue = [];
-        resolve();
       });
 
       ws.once("error", (err) => reject(err));
 
       ws.on("message", (data: Buffer) => {
         const msg = JSON.parse(data.toString());
+        if (msg.type === "identified") {
+          for (const m of this.queue) this.relay(m);
+          this.queue = [];
+          resolve();
+        }
         if (msg.type === "data" && this.onMessage) {
           this.onMessage(Buffer.from(msg.payload as string, "base64"));
         }

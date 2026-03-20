@@ -22,6 +22,7 @@ describe("RelayClient", () => {
 
           if (msg.type === "identify") {
             peers.set(msg.peerId, ws);
+            ws.send(JSON.stringify({ type: "identified" }));
           }
 
           if (msg.type === "relay") {

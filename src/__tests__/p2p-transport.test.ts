@@ -46,6 +46,7 @@ describe("P2PTransport", () => {
           if (msg.type === "identify") {
             const existing = peers.get(msg.peerId);
             if (existing) peers.set(msg.peerId, { ...existing, ws });
+            ws.send(JSON.stringify({ type: "identified" }));
           }
         });
       });

@@ -14,6 +14,14 @@ const DEFAULT_STUN_SERVERS = [
   { host: "stun.cloudflare.com", port: 3478 },
 ];
 
+// Magic cookie RFC 5389 — bytes 4-7 de qualquer mensagem STUN
+const STUN_MAGIC_COOKIE = 0x2112a442;
+
+function isStunPacket(msg: Buffer): boolean {
+  if (msg.length < 8) return false;
+  return msg.readUInt32BE(4) === STUN_MAGIC_COOKIE;
+}
+
 interface MultiP2PTransportOptions {
   stunServers?: { host: string; port: number }[];
   stunTimeoutMs?: number;
@@ -36,7 +44,8 @@ export class MultiP2PTransport implements EdenTransport {
   private socket: dgram.Socket | null = null;
   private onMessage: ((msg: Buffer) => void) | null = null;
   private bindPort = 0;
-  private socketBound = false;
+  private bindPromise: Promise<void> | null = null;
+  private publicEndpoint: Endpoint | null = null;
   private readonly peers = new Map<string, PeerState>();
 
   constructor(private readonly options: MultiP2PTransportOptions = {}) {}
@@ -46,6 +55,7 @@ export class MultiP2PTransport implements EdenTransport {
     this.socket = dgram.createSocket("udp4");
     this.onMessage = (msg: Buffer) => {
       if (msg.toString() === PROBE_MAGIC) return;
+      if (isStunPacket(msg)) return;
       onMessage(msg);
     };
     this.socket.on("message", this.onMessage);
@@ -70,24 +80,28 @@ export class MultiP2PTransport implements EdenTransport {
     this.peers.clear();
     try { this.socket?.close(); } catch { /* already closed */ }
     this.socket = null;
+    this.bindPromise = null;
+    this.publicEndpoint = null;
   }
 
   async addPeer(myId: string, targetId: string, signalingUrl: string): Promise<void> {
     if (!this.socket) throw new Error("Must call bind() before addPeer()");
 
-    // Ensure socket is bound before using it
-    if (!this.socketBound) {
-      await new Promise<void>((resolve) => this.socket!.bind(this.bindPort, resolve));
-      this.socketBound = true;
+    // Bug 3: limpar peer existente antes de sobrescrever (evita relay leak)
+    this.removePeer(targetId);
+
+    // Bug 2: promise compartilhada para evitar bind() duplo em addPeer() paralelos
+    if (!this.bindPromise) {
+      this.bindPromise = new Promise<void>((resolve) => this.socket!.bind(this.bindPort, resolve));
     }
+    await this.bindPromise;
 
     const localPort = (this.socket.address() as { port: number }).port;
 
-    // Discover public endpoint via STUN (keepAlive + prebound to share socket)
+    // Bônus: cache do publicEndpoint — mesmo socket, mesmo resultado
     const stunServers = this.options.stunServers ?? DEFAULT_STUN_SERVERS;
-    let publicHost = "127.0.0.1";
 
-    if (stunServers.length > 0) {
+    if (!this.publicEndpoint && stunServers.length > 0) {
       try {
         const stun = new StunClient(stunServers, {
           timeoutMs: this.options.stunTimeoutMs ?? 3000,
@@ -96,11 +110,14 @@ export class MultiP2PTransport implements EdenTransport {
           prebound: true,
         });
         const ep = await stun.discover();
-        publicHost = ep.host;
+        this.publicEndpoint = { host: ep.host, port: localPort };
       } catch {
         // no internet or STUN unavailable — use loopback
+        this.publicEndpoint = { host: "127.0.0.1", port: localPort };
       }
     }
+
+    const publicHost = this.publicEndpoint?.host ?? "127.0.0.1";
 
     // Register in Signaling and get peer endpoint
     const signaling = new SignalingClient(signalingUrl, {

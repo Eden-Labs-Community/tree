@@ -8,7 +8,7 @@ interface StunServer {
   port: number;
 }
 
-type DgramSocket = Pick<dgram.Socket, "send" | "on" | "bind" | "close">;
+type DgramSocket = Pick<dgram.Socket, "send" | "on" | "off" | "bind" | "close">;
 
 interface StunClientOptions {
   timeoutMs?: number;
@@ -37,7 +37,11 @@ export class StunClient {
       const done = (result: Endpoint | Error) => {
         if (resolved) return;
         resolved = true;
-        if (!this.options.keepAlive) socket.close();
+        if (this.options.keepAlive) {
+          socket.off("message", onMessage);
+        } else {
+          socket.close();
+        }
         if (result instanceof Error) {
           reject(result);
         } else {
@@ -45,10 +49,12 @@ export class StunClient {
         }
       };
 
-      socket.on("message", (msg: Buffer) => {
+      const onMessage = (msg: Buffer) => {
         const endpoint = parseBindingResponse(msg);
         if (endpoint) done({ host: endpoint.ip, port: endpoint.port });
-      });
+      };
+
+      socket.on("message", onMessage);
 
       const sendRequests = () => {
         const { message } = buildBindingRequest();

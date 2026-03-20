@@ -45,6 +45,7 @@ describe("MultiP2PTransport", () => {
           if (msg.type === "identify") {
             const existing = peers.get(msg.peerId);
             if (existing) peers.set(msg.peerId, { ...existing, ws });
+            ws.send(JSON.stringify({ type: "identified" }));
           }
         });
       });
@@ -172,6 +173,91 @@ describe("MultiP2PTransport", () => {
           }, 200);
         }, 100);
       }, 200);
+    });
+  }, 8000);
+
+  it("addPeer paralelo não causa EINVAL de bind duplo", async () => {
+    const url = `ws://127.0.0.1:${signalingPort}`;
+    const t = new MultiP2PTransport(testOpts);
+    t.bind(0, () => {});
+
+    // Dois addPeer simultâneos — o segundo não pode tentar socket.bind() de novo
+    await expect(
+      Promise.all([
+        t.addPeer("race-a", "race-b", url).catch(() => {}),
+        t.addPeer("race-a", "race-c", url).catch(() => {}),
+      ])
+    ).resolves.not.toThrow();
+
+    t.close();
+  }, 8000);
+
+  it("addPeer duplicado fecha relay antigo antes de reconectar", (done) => {
+    const url = `ws://127.0.0.1:${signalingPort}`;
+    const opts = { stunServers: [], punchTimeoutMs: 0, signalingTimeoutMs: 2000 };
+    const tA = new MultiP2PTransport(opts);
+    const tB = new MultiP2PTransport(opts);
+
+    tB.bind(0, () => {});
+    tA.bind(0, () => {});
+
+    // Primeira conexão
+    Promise.all([
+      tA.addPeer("dup-a", "dup-b", url),
+      tB.addPeer("dup-b", "dup-a", url),
+    ]).then(() => {
+      expect(tA.getPeerCount()).toBe(1);
+
+      // Segunda conexão com o mesmo targetId — deve limpar a anterior sem leak
+      tA.addPeer("dup-a", "dup-b", url).then(() => {
+        expect(tA.getPeerCount()).toBe(1); // continua 1, não 2
+        tA.close();
+        tB.close();
+        done();
+      });
+    });
+  }, 10000);
+
+  it("pacotes STUN binários não chegam no onMessage da aplicação", (done) => {
+    const url = `ws://127.0.0.1:${signalingPort}`;
+    const tA = new MultiP2PTransport(testOpts);
+    const tB = new MultiP2PTransport(testOpts);
+
+    const received: string[] = [];
+    tB.bind(0, (msg) => {
+      received.push(msg.toString());
+    });
+    tA.bind(0, () => {});
+
+    Promise.all([
+      tA.addPeer("stun-a", "stun-b", url),
+      tB.addPeer("stun-b", "stun-a", url),
+    ]).then(() => {
+      // Simula pacote STUN binário chegando no socket de tB
+      // Magic cookie 0x2112A442 nos bytes 4-7
+      const stunPacket = Buffer.alloc(20);
+      stunPacket.writeUInt16BE(0x0101, 0); // Binding Response
+      stunPacket.writeUInt16BE(0, 2);       // length
+      stunPacket.writeUInt32BE(0x2112a442, 4); // magic cookie
+
+      // Envia pacote STUN diretamente via UDP para o socket de tB
+      const dgram = require("node:dgram");
+      const sender = dgram.createSocket("udp4");
+      const tBPort = (tB as any).socket.address().port;
+      sender.send(stunPacket, tBPort, "127.0.0.1", () => {
+        sender.close();
+
+        // Envia mensagem real depois
+        tA.send(Buffer.from("real-message"));
+
+        setTimeout(() => {
+          // Deve ter recebido só a mensagem real, não o pacote STUN
+          expect(received).toEqual(["real-message"]);
+          tA.close();
+          tB.close();
+          done();
+        }, 300);
+      });
     });
   }, 8000);
 

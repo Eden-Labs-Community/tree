@@ -35,6 +35,9 @@ describe("StunClient", () => {
         listeners[event] = listeners[event] ?? [];
         listeners[event]!.push(cb);
       }),
+      off: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+        listeners[event] = (listeners[event] ?? []).filter((l) => l !== cb);
+      }),
       bind: jest.fn((_port: number, cb: () => void) => {
         setImmediate(cb);
       }),
@@ -101,7 +104,7 @@ describe("StunClient", () => {
     expect(socket.close).toHaveBeenCalled();
   });
 
-  it("keepAlive: true does not close the socket after discovery", async () => {
+  it("keepAlive: true does not close the socket but removes the listener", async () => {
     const socket = makeFakeSocket((_msg, _port, _host) => {
       setImmediate(() => socket.emit("message", buildFakeResponse("1.2.3.4", 5678)));
     });
@@ -113,6 +116,7 @@ describe("StunClient", () => {
 
     await client.discover();
     expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.off).toHaveBeenCalledWith("message", expect.any(Function));
   });
 
   it("prebound: true does not call socket.bind()", async () => {
@@ -127,6 +131,19 @@ describe("StunClient", () => {
 
     await client.discover();
     expect(socket.bind).not.toHaveBeenCalled();
+  });
+
+  it("keepAlive: true removes the listener even on timeout", async () => {
+    const socket = makeFakeSocket(); // ninguém responde
+
+    const client = new StunClient(
+      [{ host: "unreachable.example", port: 19302 }],
+      { timeoutMs: 50, createSocket: () => socket as any, keepAlive: true }
+    );
+
+    await expect(client.discover()).rejects.toThrow(EdenStunTimeoutError);
+    expect(socket.close).not.toHaveBeenCalled();
+    expect(socket.off).toHaveBeenCalledWith("message", expect.any(Function));
   });
 
   it("does not resolve twice if multiple servers respond", async () => {
