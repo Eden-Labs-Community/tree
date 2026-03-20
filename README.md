@@ -172,60 +172,98 @@ await Promise.all([
 
 ## Signaling server
 
-The signaling server is a small WebSocket server that helps peers find each other before connecting. It only exchanges IP/port info — it never sees your event payloads.
+The signaling server is a small WebSocket server with a public IP that plays two roles:
 
-You need to host one with a public IP. The minimal protocol it must implement:
+**Role 1 — Registry**: peers exchange their public `{host, port}` before attempting hole punching. The server only stores endpoint metadata — it never sees your event payloads.
+
+**Role 2 — Relay**: when hole punching fails (~15% of symmetric NAT cases), the server forwards encrypted UDP frames between peers over WebSocket. Both roles share the same URL and the same server process.
+
+### Protocol
 
 ```
+// Role 1 — Registry (hole punching setup)
 Client → Server: { type: "register", peerId, endpoint: { host, port } }
 Server → Client: { type: "registered" }
 
-Client → Server: { type: "request_connect", peerId, targetId }
+Client → Server: { type: "request_connect", myId, targetId }
 Server → Client: { type: "peer_endpoint", endpoint: { host, port } }
              or: { type: "error", reason: "peer_not_found" }
 
+// Role 2 — Relay (symmetric NAT fallback)
+Client → Server: { type: "identify", peerId }
 Client → Server: { type: "relay", fromPeerId, targetPeerId, payload: base64 }
 Server → Target: { type: "data", from: fromPeerId, payload: base64 }
-
-Client → Server: { type: "identify", peerId }   // re-register WebSocket after reconnect
 ```
 
-Minimal Node.js signaling server:
+`P2PTransport` first tries hole punching via the registry; if that fails, it falls back to relay — both use the same `signalingUrl` you passed to the constructor.
+
+### Minimal Node.js implementation
 
 ```ts
 import { WebSocketServer, WebSocket } from "ws";
 
 const server = new WebSocketServer({ port: 8080 });
-const peers = new Map<string, { endpoint: { host: string; port: number }; ws: WebSocket }>();
+
+interface PeerEntry {
+  endpoint: { host: string; port: number };
+  ws: WebSocket;
+}
+
+const peers = new Map<string, PeerEntry>();
 
 server.on("connection", (ws) => {
   ws.on("message", (data) => {
     const msg = JSON.parse(data.toString());
 
+    // Role 1 — register public endpoint for hole punching
     if (msg.type === "register") {
       peers.set(msg.peerId, { endpoint: msg.endpoint, ws });
       ws.send(JSON.stringify({ type: "registered" }));
     }
 
+    // Role 1 — return remote peer's endpoint so both sides can punch
     if (msg.type === "request_connect") {
       const peer = peers.get(msg.targetId);
-      if (peer) ws.send(JSON.stringify({ type: "peer_endpoint", endpoint: peer.endpoint }));
-      else ws.send(JSON.stringify({ type: "error", reason: "peer_not_found" }));
+      if (peer) {
+        ws.send(JSON.stringify({ type: "peer_endpoint", endpoint: peer.endpoint }));
+      } else {
+        ws.send(JSON.stringify({ type: "error", reason: "peer_not_found" }));
+      }
     }
 
-    if (msg.type === "relay") {
-      const target = peers.get(msg.targetPeerId);
-      if (target?.ws.readyState === WebSocket.OPEN)
-        target.ws.send(JSON.stringify({ type: "data", from: msg.fromPeerId, payload: msg.payload }));
-    }
-
+    // Role 2 — re-associate WebSocket with peerId after relay reconnect
     if (msg.type === "identify") {
       const existing = peers.get(msg.peerId);
       if (existing) peers.set(msg.peerId, { ...existing, ws });
     }
+
+    // Role 2 — forward relay frame to target peer
+    if (msg.type === "relay") {
+      const target = peers.get(msg.targetPeerId);
+      if (target?.ws.readyState === WebSocket.OPEN) {
+        target.ws.send(
+          JSON.stringify({ type: "data", from: msg.fromPeerId, payload: msg.payload })
+        );
+      }
+    }
+  });
+
+  ws.on("close", () => {
+    // clean up disconnected peers
+    for (const [id, entry] of peers) {
+      if (entry.ws === ws) peers.delete(id);
+    }
   });
 });
+
+console.log("Signaling server listening on ws://0.0.0.0:8080");
 ```
+
+### Deployment notes
+
+- The server must have a **public IP** — it cannot itself be behind NAT
+- It holds state in memory; for multi-instance deployments you need a shared store (Redis, etc.)
+- For production, add auth to prevent arbitrary peers from relaying through your server
 
 ---
 
