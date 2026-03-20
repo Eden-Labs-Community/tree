@@ -1,6 +1,6 @@
 {
   "name": "@eden_labs/tree",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Event manager for the Eden ecosystem",
   "type": "module",
   "main": "./dist/index.js",

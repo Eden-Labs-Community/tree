@@ -62,6 +62,7 @@ Classes de erro do ecossistema Eden.
 - `EdenInvalidEnvelopeError` — envelope malformado ou com campos obrigatórios ausentes
 - `EdenStunTimeoutError` — nenhum servidor STUN respondeu no prazo
 - `EdenSignalingError` — servidor de sinalização retornou erro ou timeout
+- `EdenSentinelError` — erro de conexão/operação do sentinel
 
 ### `envelope/envelope.ts`
 Fábrica e tipo do `EventEnvelope`. Valida o formato do tipo antes de criar.
@@ -123,12 +124,16 @@ Implementação de `EdenTransport` com socket único para N peers simultâneos.
 ### `transports/p2p/multi-p2p-transport.ts`
 Implementação de `EdenTransport` com socket único e NAT traversal por peer.
 - `addPeer(myId, targetId, signalingUrl)` — executa STUN→Signaling→HolePunch→Relay para cada peer
-- `removePeer(peerId)` — remove peer e fecha relay se necessário
+- `removePeer(peerId)` — remove peer, fecha relay, notifica election; se `peers.size === 0` → para election (mesh morta)
 - `getPeerCount()` — retorna número de peers ativos
 - `send(msg)` — fanout para todos peers (direct via UDP ou relay via WS)
-- `bind(port, onMessage)` — cria socket único, filtra `PROBE_MAGIC`; `addPeer()` faz o bind efetivo
-- `close()` — fecha todos os relays + socket; idempotente
+- `bind(port, onMessage)` — cria socket único, filtra `PROBE_MAGIC`, `STUN_MAGIC_COOKIE` e `SENTINEL_HEARTBEAT_MAGIC`; heartbeats roteados para `election.handleHeartbeat()`
+- `close()` — para election + sentinel + fecha relays + socket; idempotente
+- `getElection()` — retorna instância de `SentinelElection` ou null
+- `getSentinel()` — retorna instância de `SignalingSentinel` ou null
 - Usa `StunClient` com `keepAlive: true, prebound: true` para não destruir socket compartilhado
+- Opções de eleição: `heartbeatIntervalMs`, `heartbeatTimeoutMs`, `cascadeStepMs`
+- Com `sentinel: true`: primeiro `addPeer()` cria `SentinelElection` + `SignalingSentinel` e inicia como sentinel; promoção/demoção gerenciada automaticamente via election callbacks
 
 ### `transports/p2p/p2p-transport.ts`
 Implementação de `EdenTransport` com NAT traversal automático.
@@ -169,6 +174,37 @@ Proxy transparente via servidor de sinalização para casos de NAT simétrico es
 - `send()` faz queue se WebSocket ainda não está aberto, envia ao abrir
 - `waitForReady()` aguarda WS abrir + `identify` enviado
 - `close()` usa `ws.terminate()` + silencia eventos de erro tardios
+
+### `signaling/signaling-sentinel.ts`
+Conexão persistente com signaling server via WebSocket. Mantém registro ativo do peer.
+- `start()` — conecta e registra no signaling server
+- `stop()` — idempotente; fecha WS e limpa timers; adiciona error handler no-op antes de `terminate()` para evitar unhandled errors assíncronos
+- `isConnected()` — `true` se WS está OPEN
+- `updateEndpoint(ep)` — re-registra com novo endpoint
+- Reconexão automática com exponential backoff (`initialBackoffMs`, `maxBackoffMs`, `backoffMultiplier`)
+- Callbacks: `onReconnect`, `onDisconnect`
+- **IMPORTANTE:** ao fechar WS, sempre chamar `removeAllListeners()` seguido de `.on("error", () => {})` ANTES de `terminate()` — `ws` emite error assíncrono e sem handler causa crash
+
+### `sentinel/sentinel-election.ts`
+Eleição de sentinela peer-to-peer via heartbeat + sucessão em cascata.
+- `SENTINEL_HEARTBEAT_MAGIC = "__EDEN_SENTINEL_HB__\n"` — prefixo mágico para filtragem barata em `bind()`
+- `startAsSentinel()` — epoch=1, começa heartbeat imediato + periódico
+- `startAsFollower()` — espera heartbeats, promove após timeout
+- `handleHeartbeat(msg)` — parse + lógica de split-brain + reset de timeout
+- `peerAdded(peerId)` / `peerRemoved(peerId)` — successors atualizados via `getSuccessors()` callback
+- `stop()` — idempotente, limpa todos os timers
+- `isSentinelActive()` / `getEpoch()`
+
+**Heartbeat payload:** `{ sentinelId, epoch, successors, ts }` — epoch é monotônico, successors vem da ordem de inserção do Map de peers
+
+**Sucessão em cascata:**
+- Successor #0: promove após `heartbeatTimeoutMs` (default 6s)
+- Successor #N: promove após `heartbeatTimeoutMs + N * cascadeStepMs` (default +2s por posição)
+- Heartbeat recebido durante espera cancela promoção
+
+**Split-brain:** epoch maior vence; mesmo epoch → peerId lexicograficamente menor vence; perdedor chama `onDemoted`
+
+**Defaults:** `heartbeatIntervalMs=2000`, `heartbeatTimeoutMs=6000`, `cascadeStepMs=2000`
 
 ### `socket/socket.ts`
 Re-exporta `UdpTransport` como `UdpSocketImpl` para compatibilidade com código antigo. Pode ser ignorado.
@@ -226,6 +262,36 @@ P2PTransport.bind(_, onMessage)
   → Registra handler no socket UDP e/ou relay
 ```
 
+## Fluxo completo — Eleição de Sentinela
+
+```
+MultiP2PTransport com sentinel=true:
+
+  Primeiro addPeer() bem-sucedido:
+    → Cria SentinelElection + SignalingSentinel
+    → election.startAsSentinel() → epoch=1, heartbeat imediato
+    → Heartbeats enviados via transport.send() (fanout UDP/relay)
+
+  Peers subsequentes com sentinel=true:
+    → Recebem heartbeats via bind() → filtrados por SENTINEL_HEARTBEAT_MAGIC
+    → election.handleHeartbeat() → armazena sentinelId, reseta timeout
+    → Ficam em standby como followers
+
+  Sentinel morre (close/crash):
+    → Followers param de receber heartbeats
+    → Successor #0 promove após heartbeatTimeoutMs → onPromoted()
+      → Cria novo SignalingSentinel + começa heartbeats (epoch+1)
+    → Successors #1..N cancelam ao receber heartbeat do novo sentinel
+
+  Split-brain (dois sentinels simultâneos):
+    → Heartbeat com epoch maior vence
+    → Mesmo epoch → peerId lexicograficamente menor vence
+    → Perdedor: onDemoted() → sentinel.stop(), sentinel=null
+
+  Mesh morta (peers.size === 0):
+    → election.stop(), election=null — sem sentido ser sentinel sozinho
+```
+
 ---
 
 ## Estrutura de arquivos
@@ -254,6 +320,9 @@ src/
     stun-client.ts            ← descobre endpoint público
   signaling/
     signaling-client.ts       ← WebSocket para troca de endpoints
+    signaling-sentinel.ts     ← conexão persistente com signaling (reconexão automática)
+  sentinel/
+    sentinel-election.ts      ← eleição peer-to-peer (heartbeat + cascata + split-brain)
   hole-punch/
     hole-puncher.ts           ← UDP hole punching com grace period
   relay/
@@ -326,6 +395,17 @@ Overhead do hole punch pós-conexão é negligenciável. Relay tem ~2× overhead
 - [x] Signaling com retry (5×, 200ms) — peer remoto pode registrar com delay
 - [x] `PROBE_MAGIC` filtrado no `P2PTransport.bind()` e `MultiP2PTransport.bind()` antes de chegar na aplicação
 - [x] `StunClient` suporta `keepAlive: true` (não fecha socket compartilhado) e `prebound: true` (pula socket.bind() se já bound)
+
+### Sentinel e Eleição
+- [x] `SignalingSentinel` — conexão persistente com signaling server; reconexão com exponential backoff
+- [x] `SignalingSentinel.stop()` adiciona error handler no-op após `removeAllListeners()` antes de `terminate()` — evita crash por error assíncrono do `ws`
+- [x] `SentinelElection` — eleição peer-to-peer sem mudanças no signaling server
+- [x] Heartbeat via transport layer (`send()` → fanout UDP/relay) com prefixo mágico `SENTINEL_HEARTBEAT_MAGIC`
+- [x] Sucessão em cascata: successor #N espera `timeoutMs + N * cascadeStepMs` — evita eleição simultânea
+- [x] Split-brain: epoch maior vence; mesmo epoch → peerId menor vence — determinístico, sem coordenação
+- [x] `MultiP2PTransport.bind()` filtra heartbeats antes de entregar ao app (mesmo padrão de `PROBE_MAGIC` e `STUN_MAGIC_COOKIE`)
+- [x] `removePeer()` com `peers.size === 0` para election — mesh morta, sem sentido ser sentinel
+- [x] `onPromoted` cria `SignalingSentinel`; `onDemoted` destrói — sentinel só existe no peer ativo
 
 ### Multi-linguagem
 - [x] SDKs para outras linguagens = repos separados com mesmo protocolo de envelope

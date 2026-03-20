@@ -34,3 +34,10 @@ export class EdenSignalingError extends EdenError {
     this.name = "EdenSignalingError";
   }
 }
+
+export class EdenSentinelError extends EdenError {
+  constructor(reason: string) {
+    super(`Sentinel error: ${reason}`);
+    this.name = "EdenSentinelError";
+  }
+}

@@ -4,6 +4,8 @@ import { StunClient } from "../../stun/stun-client.js";
 import { SignalingClient } from "../../signaling/signaling-client.js";
 import { HolePuncher, PROBE_MAGIC } from "../../hole-punch/hole-puncher.js";
 import { RelayClient } from "../../relay/relay-client.js";
+import { SignalingSentinel } from "../../signaling/signaling-sentinel.js";
+import { SentinelElection, SENTINEL_HEARTBEAT_MAGIC } from "../../sentinel/sentinel-election.js";
 
 type PeerState =
   | { mode: "direct"; endpoint: Endpoint }
@@ -27,6 +29,10 @@ interface MultiP2PTransportOptions {
   stunTimeoutMs?: number;
   punchTimeoutMs?: number;
   signalingTimeoutMs?: number;
+  sentinel?: boolean;
+  heartbeatIntervalMs?: number;
+  heartbeatTimeoutMs?: number;
+  cascadeStepMs?: number;
 }
 
 /**
@@ -47,6 +53,10 @@ export class MultiP2PTransport implements EdenTransport {
   private bindPromise: Promise<void> | null = null;
   private publicEndpoint: Endpoint | null = null;
   private readonly peers = new Map<string, PeerState>();
+  private sentinel: SignalingSentinel | null = null;
+  private election: SentinelElection | null = null;
+  private myId: string | null = null;
+  private lastSignalingUrl: string | null = null;
 
   constructor(private readonly options: MultiP2PTransportOptions = {}) {}
 
@@ -56,6 +66,11 @@ export class MultiP2PTransport implements EdenTransport {
     this.onMessage = (msg: Buffer) => {
       if (msg.toString() === PROBE_MAGIC) return;
       if (isStunPacket(msg)) return;
+      const str = msg.toString();
+      if (str.startsWith(SENTINEL_HEARTBEAT_MAGIC)) {
+        this.election?.handleHeartbeat(msg);
+        return;
+      }
       onMessage(msg);
     };
     this.socket.on("message", this.onMessage);
@@ -74,6 +89,10 @@ export class MultiP2PTransport implements EdenTransport {
   }
 
   close(): void {
+    this.election?.stop();
+    this.election = null;
+    this.sentinel?.stop();
+    this.sentinel = null;
     for (const peer of this.peers.values()) {
       if (peer.mode === "relay") peer.relay.close();
     }
@@ -166,16 +185,73 @@ export class MultiP2PTransport implements EdenTransport {
     } else {
       await this.setupRelay(myId, targetId, signalingUrl);
     }
+
+    // Track state for election
+    this.myId = myId;
+    this.lastSignalingUrl = signalingUrl;
+
+    // Inicia sentinel + election na primeira conexão bem-sucedida
+    if (this.options.sentinel && !this.election) {
+      this.election = new SentinelElection({
+        peerId: myId,
+        heartbeatIntervalMs: this.options.heartbeatIntervalMs,
+        heartbeatTimeoutMs: this.options.heartbeatTimeoutMs,
+        cascadeStepMs: this.options.cascadeStepMs,
+        sendHeartbeat: (msg) => this.send(msg),
+        getSuccessors: () => [...this.peers.keys()],
+        onPromoted: () => this.handlePromoted(signalingUrl, publicHost, localPort),
+        onDemoted: () => this.handleDemoted(),
+      });
+
+      // First peer with sentinel=true becomes sentinel
+      this.sentinel = new SignalingSentinel({
+        url: signalingUrl,
+        peerId: myId,
+        endpoint: { host: publicHost, port: localPort },
+      });
+      this.sentinel.start().catch(() => { /* sentinel start failure is non-fatal */ });
+      this.election.startAsSentinel();
+    } else if (this.options.sentinel && this.election) {
+      this.election.peerAdded(targetId);
+    }
   }
 
   removePeer(peerId: string): void {
     const peer = this.peers.get(peerId);
     if (peer?.mode === "relay") peer.relay.close();
     this.peers.delete(peerId);
+    this.election?.peerRemoved(peerId);
+    if (this.peers.size === 0) {
+      this.election?.stop();
+      this.election = null;
+    }
   }
 
   getPeerCount(): number {
     return this.peers.size;
+  }
+
+  getSentinel(): SignalingSentinel | null {
+    return this.sentinel;
+  }
+
+  getElection(): SentinelElection | null {
+    return this.election;
+  }
+
+  private handlePromoted(signalingUrl: string, publicHost: string, localPort: number): void {
+    if (!this.myId) return;
+    this.sentinel = new SignalingSentinel({
+      url: signalingUrl,
+      peerId: this.myId,
+      endpoint: { host: publicHost, port: localPort },
+    });
+    this.sentinel.start().catch(() => { /* sentinel start failure is non-fatal */ });
+  }
+
+  private handleDemoted(): void {
+    this.sentinel?.stop();
+    this.sentinel = null;
   }
 
   private async setupRelay(myId: string, targetId: string, signalingUrl: string): Promise<void> {

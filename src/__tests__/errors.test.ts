@@ -1,4 +1,4 @@
-import { EdenError, EdenInvalidEventTypeError, EdenInvalidEnvelopeError } from "../errors/errors.js";
+import { EdenError, EdenInvalidEventTypeError, EdenInvalidEnvelopeError, EdenSentinelError } from "../errors/errors.js";
 
 describe("EdenError", () => {
   it("is an instance of Error", () => {
@@ -33,5 +33,22 @@ describe("EdenInvalidEnvelopeError", () => {
   it("includes the reason in the message", () => {
     const error = new EdenInvalidEnvelopeError("missing id");
     expect(error.message).toContain("missing id");
+  });
+});
+
+describe("EdenSentinelError", () => {
+  it("is an instance of EdenError", () => {
+    const error = new EdenSentinelError("connection lost");
+    expect(error).toBeInstanceOf(EdenError);
+  });
+
+  it("has the correct name", () => {
+    const error = new EdenSentinelError("connection lost");
+    expect(error.name).toBe("EdenSentinelError");
+  });
+
+  it("includes the reason in the message", () => {
+    const error = new EdenSentinelError("connection lost");
+    expect(error.message).toContain("connection lost");
   });
 });

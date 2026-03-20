@@ -5,8 +5,12 @@ import {
   EdenInvalidEnvelopeError,
   EdenStunTimeoutError,
   EdenSignalingError,
+  EdenSentinelError,
   UdpTransport,
   P2PTransport,
+  SignalingSentinel,
+  SentinelElection,
+  SENTINEL_HEARTBEAT_MAGIC,
 } from "../index.js";
 import type { EventEnvelope, EdenTransport, Endpoint } from "../index.js";
 
@@ -53,5 +57,17 @@ describe("public API", () => {
   it("EdenSignalingError is instance of EdenError", () => {
     const err = new EdenSignalingError("peer not found");
     expect(err).toBeInstanceOf(EdenError);
+  });
+
+  it("exports EdenSentinelError", () => expect(EdenSentinelError).toBeDefined());
+  it("EdenSentinelError is instance of EdenError", () => {
+    const err = new EdenSentinelError("connection lost");
+    expect(err).toBeInstanceOf(EdenError);
+  });
+
+  it("exports SignalingSentinel", () => expect(SignalingSentinel).toBeDefined());
+  it("exports SentinelElection", () => expect(SentinelElection).toBeDefined());
+  it("exports SENTINEL_HEARTBEAT_MAGIC", () => {
+    expect(SENTINEL_HEARTBEAT_MAGIC).toBe("__EDEN_SENTINEL_HB__\n");
   });
 });
