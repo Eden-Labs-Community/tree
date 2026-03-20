@@ -20,7 +20,8 @@ export class Receiver {
     const envelope = this.parse(msg);
     this.handler(envelope);
 
-    if (this.socket) {
+    // Não enviar ACK para mensagens que já são ACKs — evita cascata infinita
+    if (this.socket && envelope.type !== "__ack__") {
       const ack: AckEnvelope = { type: "__ack__", id: envelope.id, receivedAt: Date.now() };
       this.socket.send(Buffer.from(JSON.stringify(ack)));
     }

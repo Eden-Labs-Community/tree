@@ -18,6 +18,6 @@ export class UdpTransport implements EdenTransport {
   }
 
   close(): void {
-    this.socket.close();
+    try { this.socket.close(); } catch { /* already closed */ }
   }
 }

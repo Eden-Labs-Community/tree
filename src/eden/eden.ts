@@ -34,7 +34,13 @@ export class Eden {
     const makeTransport = options.transport ?? ((t) => new UdpTransport(t));
 
     this.ackSocket = makeTransport({ host: options.remote.host, port: options.remote.port });
-    const receiver = new Receiver((envelope) => this.bus.publish(envelope), this.ackSocket);
+    const receiver = new Receiver((envelope) => {
+      if ((envelope as unknown as { type: string }).type === "__ack__") {
+        this.emitter.acknowledge((envelope as unknown as { id: string }).id);
+        return;
+      }
+      this.bus.publish(envelope);
+    }, this.ackSocket);
 
     this.listenSocket = makeTransport({ host: "127.0.0.1", port: options.listenPort });
     this.listenSocket.bind(options.listenPort, (msg) => receiver.handle(msg));
@@ -54,6 +60,10 @@ export class Eden {
 
   emit(type: string, payload: unknown, options?: { room?: string }): void {
     this.emitter.emit(type, payload, options);
+  }
+
+  getPendingCount(): number {
+    return this.emitter.getPending().length;
   }
 
   stop(): void {
