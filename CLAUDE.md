@@ -1,7 +1,7 @@
 # eden-core — Decisões de Arquitetura
 
 ## Propósito
-Gerenciador de eventos do ecossistema Eden. Módulo público (`@eden_labs/core`) importável por qualquer projeto do ecossistema. Implementa um event bus com at-least-once delivery sobre UDP puro (`node:dgram`) com suporte a NAT traversal via P2PTransport plugável.
+Gerenciador de eventos do ecossistema Eden. Módulo público (`@eden_labs/root`) importável por qualquer projeto do ecossistema. Implementa um event bus com at-least-once delivery sobre UDP puro (`node:dgram`) com suporte a NAT traversal via P2PTransport plugável.
 
 A API pública principal é a classe `Eden` — encapsula toda a complexidade interna e expõe apenas `.on()`, `.emit()` e `.stop()`.
 
@@ -256,7 +256,7 @@ docs/
 ---
 
 ## Distribuição
-- `@eden_labs/core` — NPM público, ESM puro, TypeScript com exports de tipos
+- `@eden_labs/root` — NPM público, ESM puro, TypeScript com exports de tipos
 - SDKs para outras linguagens = repos separados implementando o mesmo protocolo de envelope
 
 ---

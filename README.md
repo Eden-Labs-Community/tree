@@ -1,4 +1,4 @@
-# @eden_labs/core
+# @eden_labs/root
 
 Event manager for the Eden ecosystem. Fast, reliable event bus with at-least-once delivery guarantees — works on the same machine, across a local network, or across the internet through NAT via P2P hole punching and relay fallback.
 
@@ -22,7 +22,7 @@ Events are sent as UDP packets. The emitter retries automatically if no ACK arri
 ### Same machine / same network (UdpTransport, default)
 
 ```ts
-import { Eden } from "@eden_labs/core";
+import { Eden } from "@eden_labs/root";
 
 const a = new Eden({
   listenPort: 5000,
@@ -60,7 +60,7 @@ For peers behind NAT (home networks, mobile, cloud VMs without public IP), use `
 You need a **signaling server** with a public IP — a small WebSocket server peers use to exchange endpoints before connecting. See [Signaling server](#signaling-server) below.
 
 ```ts
-import { Eden, P2PTransport } from "@eden_labs/core";
+import { Eden, P2PTransport } from "@eden_labs/root";
 
 const transport = new P2PTransport("peer-alice", "ws://your-signal-server:8080", {
   stunServers: [
@@ -300,7 +300,7 @@ All errors extend `EdenError`:
 | `EdenSignalingError` | Signaling server returned an error or timed out |
 
 ```ts
-import { EdenError, EdenSignalingError, EdenStunTimeoutError } from "@eden_labs/core";
+import { EdenError, EdenSignalingError, EdenStunTimeoutError } from "@eden_labs/root";
 
 try {
   await transport.connect("peer-bob");

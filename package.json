@@ -1,5 +1,5 @@
 {
-  "name": "@eden_labs/core",
+  "name": "@eden_labs/root",
   "version": "0.2.0",
   "description": "Event manager for the Eden ecosystem",
   "type": "module",
