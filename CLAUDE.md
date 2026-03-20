@@ -120,6 +120,16 @@ Implementação de `EdenTransport` com socket único para N peers simultâneos.
 - `close()` — chama `peers.clear()` antes de fechar o socket; idempotente
 - **Overhead vs N UdpTransport**: negligenciável (<2%) em fanout, com vantagem de 1 fd vs N
 
+### `transports/p2p/multi-p2p-transport.ts`
+Implementação de `EdenTransport` com socket único e NAT traversal por peer.
+- `addPeer(myId, targetId, signalingUrl)` — executa STUN→Signaling→HolePunch→Relay para cada peer
+- `removePeer(peerId)` — remove peer e fecha relay se necessário
+- `getPeerCount()` — retorna número de peers ativos
+- `send(msg)` — fanout para todos peers (direct via UDP ou relay via WS)
+- `bind(port, onMessage)` — cria socket único, filtra `PROBE_MAGIC`; `addPeer()` faz o bind efetivo
+- `close()` — fecha todos os relays + socket; idempotente
+- Usa `StunClient` com `keepAlive: true, prebound: true` para não destruir socket compartilhado
+
 ### `transports/p2p/p2p-transport.ts`
 Implementação de `EdenTransport` com NAT traversal automático.
 - `connect(targetPeerId)` — executa STUN → Signaling → HolePunch → Relay em sequência
@@ -238,6 +248,7 @@ src/
     udp/udp-transport.ts      ← implementação padrão (node:dgram)
     udp/multi-udp-transport.ts ← socket único para N peers (fanout)
     p2p/p2p-transport.ts      ← NAT traversal (STUN + hole punch + relay)
+    p2p/multi-p2p-transport.ts ← socket único + NAT traversal por peer (N peers, 1 fd)
   stun/
     stun-message.ts           ← RFC 5389 builder/parser
     stun-client.ts            ← descobre endpoint público
@@ -301,16 +312,20 @@ Overhead do hole punch pós-conexão é negligenciável. Relay tem ~2× overhead
 - [x] `UdpTransport.close()` idempotente — factory pode retornar mesma instância 3× para ackSocket/listenSocket/emitSocket
 - [x] Mesma idempotência em `P2PTransport.close()`
 - [x] `MultiUdpTransport` — socket único para N peers; `close()` chama `peers.clear()` antes de fechar socket; overhead <2% vs N UdpTransport em fanout
+- [x] `MultiP2PTransport` — socket único + NAT traversal por peer; `addPeer(myId, targetId, signalingUrl)` executa STUN→Signaling→HolePunch→Relay; `removePeer(peerId)` fecha relay se necessário
 
 ### NAT Traversal
 - [x] STUN RFC 5389 do zero (zero deps externas) — `stun-message.ts`
 - [x] Hole punching com grace period de 300ms para simetria de NAT
+- [x] HolePuncher filtra por `rinfo` (address+port) — evita que probe de peer errado resolva punchers paralelos
+- [x] HolePuncher remove listener via `socket.off()` após resolver (direto ou timeout) — sem vazamento em socket compartilhado
 - [x] `stunServers: []` pula STUN (mesmo host/rede local)
 - [x] `punchTimeoutMs: 0` pula hole punch, vai direto para relay
 - [x] Relay via WebSocket signaling server — fallback para NAT simétrico estrito
 - [x] Relay `send()` faz queue se WS ainda não abriu (sem race condition)
 - [x] Signaling com retry (5×, 200ms) — peer remoto pode registrar com delay
-- [x] `PROBE_MAGIC` filtrado no `P2PTransport.bind()` antes de chegar na aplicação
+- [x] `PROBE_MAGIC` filtrado no `P2PTransport.bind()` e `MultiP2PTransport.bind()` antes de chegar na aplicação
+- [x] `StunClient` suporta `keepAlive: true` (não fecha socket compartilhado) e `prebound: true` (pula socket.bind() se já bound)
 
 ### Multi-linguagem
 - [x] SDKs para outras linguagens = repos separados com mesmo protocolo de envelope

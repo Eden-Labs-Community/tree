@@ -6,6 +6,8 @@
  *   1. UdpTransport (baseline — UDP puro)
  *   2. P2PTransport via hole punch (UDP com NAT traversal)
  *   3. P2PTransport via relay (WebSocket fallback)
+ *   4. MultiUdpTransport — fanout 1 socket para N peers
+ *   5. MultiP2PTransport — socket único + NAT traversal por peer (hole punch + relay)
  *
  * Uso: npm run bench
  */
@@ -14,6 +16,7 @@ import dgram from "node:dgram";
 import { WebSocketServer, WebSocket } from "ws";
 import { Eden } from "../src/eden/eden.js";
 import { P2PTransport } from "../src/transports/p2p/p2p-transport.js";
+import { MultiP2PTransport } from "../src/transports/p2p/multi-p2p-transport.js";
 import { MultiUdpTransport } from "../src/transports/udp/multi-udp-transport.js";
 import { UdpTransport } from "../src/transports/udp/udp-transport.js";
 
@@ -124,7 +127,7 @@ async function main() {
   console.log(`  Warmup: ${WARMUP} msgs | Amostras: ${SAMPLES} msgs\n`);
 
   // ── 1. UdpTransport (baseline) ──────────────────────────────────────────
-  process.stdout.write("  [1/3] UdpTransport... ");
+  process.stdout.write("  [1/5] UdpTransport... ");
   const portA = 42100;
   const portB = 42101;
   const udpA = new Eden({ listenPort: portA, remote: { host: "127.0.0.1", port: portB }, ...BENCH_EDEN_OPTS });
@@ -142,7 +145,7 @@ async function main() {
   printStats("UdpTransport — UDP puro (baseline)", udpLat, udpTotal);
 
   // ── 2. P2PTransport (hole punch) ─────────────────────────────────────────
-  process.stdout.write("  [2/3] P2PTransport (hole punch)... ");
+  process.stdout.write("  [2/5] P2PTransport (hole punch)... ");
   const sig1 = await startSignalingServer();
   const url1 = `ws://127.0.0.1:${sig1.port}`;
   const pOpts = { stunServers: [], punchTimeoutMs: 2000, signalingTimeoutMs: 3000 };
@@ -166,7 +169,7 @@ async function main() {
   printStats("P2PTransport — hole punch (UDP direto pós-conexão)", p2pLat, p2pTotal);
 
   // ── 3. P2PTransport (relay) ──────────────────────────────────────────────
-  process.stdout.write("  [3/3] P2PTransport (relay)... ");
+  process.stdout.write("  [3/5] P2PTransport (relay)... ");
   const sig2 = await startSignalingServer();
   const url2 = `ws://127.0.0.1:${sig2.port}`;
   const rOpts = { stunServers: [], punchTimeoutMs: 0, signalingTimeoutMs: 3000 };
@@ -274,15 +277,101 @@ async function main() {
     console.log();
   }
 
+  // ── 5. MultiP2PTransport (hole punch + relay) ────────────────────────────
+  // Ping-pong direto (sem Eden) — mede latência do transporte isolado.
+  // bind() deve ser chamado antes de addPeer().
+
+  // Helper: cria um par de MultiP2PTransport já conectados.
+  // tA usa um handler mutable (ref) para que o ping-pong possa registrar
+  // callbacks one-shot sem precisar rebindar o socket.
+  async function setupMultiP2PPair(
+    url: string,
+    idA: string,
+    idB: string,
+    opts: { stunServers: never[]; punchTimeoutMs: number; signalingTimeoutMs: number }
+  ): Promise<{ tA: MultiP2PTransport; tB: MultiP2PTransport; setHandlerA: (fn: (m: Buffer) => void) => void }> {
+    const tA = new MultiP2PTransport(opts);
+    const tB = new MultiP2PTransport(opts);
+
+    let handlerA: (m: Buffer) => void = () => {};
+
+    tA.bind(0, (msg) => handlerA(msg));
+    tB.bind(0, (msg) => tB.send(msg)); // echo
+
+    await Promise.all([
+      tA.addPeer(idA, idB, url),
+      tB.addPeer(idB, idA, url),
+    ]);
+
+    return { tA, tB, setHandlerA: (fn) => { handlerA = fn; } };
+  }
+
+  async function runMultiP2PPingPong(
+    tA: MultiP2PTransport,
+    setHandlerA: (fn: (m: Buffer) => void) => void,
+    samples: number
+  ): Promise<number[]> {
+    const latencies: number[] = [];
+    for (let i = 0; i < samples; i++) {
+      const start = hrMs();
+      await new Promise<void>((resolve) => {
+        setHandlerA(() => { setHandlerA(() => {}); resolve(); });
+        tA.send(Buffer.from("ping"));
+      });
+      latencies.push(hrMs() - start);
+    }
+    return latencies;
+  }
+
+  process.stdout.write("  [5a/5] MultiP2PTransport (hole punch)... ");
+  const sig3 = await startSignalingServer();
+  const url3 = `ws://127.0.0.1:${sig3.port}`;
+  const mpOpts = { stunServers: [] as never[], punchTimeoutMs: 2000, signalingTimeoutMs: 3000 };
+
+  const { tA: mpA, tB: mpB, setHandlerA: setMpA } = await setupMultiP2PPair(url3, "mp-bench-a", "mp-bench-b", mpOpts);
+
+  await runMultiP2PPingPong(mpA, setMpA, WARMUP);
+  const mpStart = hrMs();
+  const mpLat = await runMultiP2PPingPong(mpA, setMpA, SAMPLES);
+  const mpTotal = hrMs() - mpStart;
+
+  mpA.close();
+  mpB.close();
+  await sig3.close();
+  process.stdout.write("done\n");
+  printStats("MultiP2PTransport — hole punch (socket único, UDP direto)", mpLat, mpTotal);
+
+  process.stdout.write("  [5b/5] MultiP2PTransport (relay)... ");
+  const sig4 = await startSignalingServer();
+  const url4 = `ws://127.0.0.1:${sig4.port}`;
+  const mpRelOpts = { stunServers: [] as never[], punchTimeoutMs: 0, signalingTimeoutMs: 3000 };
+
+  const { tA: mpC, tB: mpD, setHandlerA: setMpC } = await setupMultiP2PPair(url4, "mp-rel-c", "mp-rel-d", mpRelOpts);
+
+  await runMultiP2PPingPong(mpC, setMpC, WARMUP);
+  const mpRelStart = hrMs();
+  const mpRelLat = await runMultiP2PPingPong(mpC, setMpC, SAMPLES);
+  const mpRelTotal = hrMs() - mpRelStart;
+
+  mpC.close();
+  mpD.close();
+  await sig4.close();
+  process.stdout.write("done\n");
+  printStats("MultiP2PTransport — relay via WebSocket (fallback)", mpRelLat, mpRelTotal);
+
   // ── Comparativo ──────────────────────────────────────────────────────────
   const udpP50 = [...udpLat].sort((a, b) => a - b)[Math.floor(udpLat.length * 0.5)]!;
   const p2pP50 = [...p2pLat].sort((a, b) => a - b)[Math.floor(p2pLat.length * 0.5)]!;
   const relP50 = [...relLat].sort((a, b) => a - b)[Math.floor(relLat.length * 0.5)]!;
+  const mpP50  = [...mpLat].sort((a, b) => a - b)[Math.floor(mpLat.length * 0.5)]!;
+  const mpRelP50 = [...mpRelLat].sort((a, b) => a - b)[Math.floor(mpRelLat.length * 0.5)]!;
 
   console.log("\n  Overhead vs UDP puro (p50)");
   console.log("  ─────────────────────────────────────────────────────");
-  console.log(`  P2PTransport (hole punch) : +${(((p2pP50 - udpP50) / udpP50) * 100).toFixed(1)}%`);
-  console.log(`  P2PTransport (relay)      : +${(((relP50 - udpP50) / udpP50) * 100).toFixed(1)}%`);
+  console.log(`  P2PTransport (hole punch)      : +${(((p2pP50 - udpP50) / udpP50) * 100).toFixed(1)}%`);
+  console.log(`  MultiP2PTransport (hole punch) : +${(((mpP50  - udpP50) / udpP50) * 100).toFixed(1)}%`);
+  console.log(`  P2PTransport (relay)           : +${(((relP50 - udpP50) / udpP50) * 100).toFixed(1)}%`);
+  console.log(`  MultiP2PTransport (relay)      : +${(((mpRelP50 - udpP50) / udpP50) * 100).toFixed(1)}%`);
   console.log("\n  Nota: loopback 127.0.0.1 — latências reais em rede serão maiores.\n");
 
   process.exit(0);

@@ -101,6 +101,34 @@ describe("StunClient", () => {
     expect(socket.close).toHaveBeenCalled();
   });
 
+  it("keepAlive: true does not close the socket after discovery", async () => {
+    const socket = makeFakeSocket((_msg, _port, _host) => {
+      setImmediate(() => socket.emit("message", buildFakeResponse("1.2.3.4", 5678)));
+    });
+
+    const client = new StunClient(
+      [{ host: "stun.l.google.com", port: 19302 }],
+      { timeoutMs: 1000, createSocket: () => socket as any, keepAlive: true }
+    );
+
+    await client.discover();
+    expect(socket.close).not.toHaveBeenCalled();
+  });
+
+  it("prebound: true does not call socket.bind()", async () => {
+    const socket = makeFakeSocket((_msg, _port, _host) => {
+      setImmediate(() => socket.emit("message", buildFakeResponse("5.6.7.8", 4321)));
+    });
+
+    const client = new StunClient(
+      [{ host: "stun.l.google.com", port: 19302 }],
+      { timeoutMs: 1000, createSocket: () => socket as any, prebound: true }
+    );
+
+    await client.discover();
+    expect(socket.bind).not.toHaveBeenCalled();
+  });
+
   it("does not resolve twice if multiple servers respond", async () => {
     let resolveCount = 0;
     const socket = makeFakeSocket(() => {

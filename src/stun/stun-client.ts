@@ -13,6 +13,8 @@ type DgramSocket = Pick<dgram.Socket, "send" | "on" | "bind" | "close">;
 interface StunClientOptions {
   timeoutMs?: number;
   createSocket?: () => DgramSocket;
+  keepAlive?: boolean;   // não fechar socket após descoberta (socket compartilhado)
+  prebound?: boolean;    // socket já está bound, pular socket.bind()
 }
 
 const DEFAULT_TIMEOUT_MS = 3000;
@@ -35,7 +37,7 @@ export class StunClient {
       const done = (result: Endpoint | Error) => {
         if (resolved) return;
         resolved = true;
-        socket.close();
+        if (!this.options.keepAlive) socket.close();
         if (result instanceof Error) {
           reject(result);
         } else {
@@ -48,12 +50,18 @@ export class StunClient {
         if (endpoint) done({ host: endpoint.ip, port: endpoint.port });
       });
 
-      socket.bind(0, () => {
+      const sendRequests = () => {
         const { message } = buildBindingRequest();
         for (const server of this.servers) {
           socket.send(message, server.port, server.host);
         }
-      });
+      };
+
+      if (this.options.prebound) {
+        sendRequests();
+      } else {
+        socket.bind(0, sendRequests);
+      }
 
       setTimeout(() => {
         done(new EdenStunTimeoutError(this.servers.map((s) => `${s.host}:${s.port}`)));

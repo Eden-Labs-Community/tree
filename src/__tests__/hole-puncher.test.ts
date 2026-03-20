@@ -14,6 +14,9 @@ describe("HolePuncher", () => {
         listeners[event] = listeners[event] ?? [];
         listeners[event]!.push(cb);
       }),
+      off: jest.fn((event: string, cb: (...args: unknown[]) => void) => {
+        listeners[event] = (listeners[event] ?? []).filter((l) => l !== cb);
+      }),
       send: jest.fn((msg: Buffer, port: number, host: string) => {
         onSend?.(msg, port, host);
       }),
@@ -109,6 +112,21 @@ describe("HolePuncher", () => {
 
     expect(result).toBe(true);
     expect(probeReceived).toBe(true);
+  });
+
+  it("ignora probe de endereço diferente do peer remoto esperado", async () => {
+    const socket = makeFakeSocket(() => {
+      setImmediate(() => {
+        // probe de endereço errado — não deve resolver
+        socket.emit("message", Buffer.from(PROBE_MAGIC), { address: "9.9.9.9", port: 1234 });
+      });
+    });
+
+    const puncher = new HolePuncher(socket as any, { timeoutMs: 80, probeIntervalMs: 20 });
+    const result = await puncher.punch({ host: "5.5.5.5", port: 9000 });
+
+    // deve falhar por timeout, não resolver com o probe do endereço errado
+    expect(result).toBe(false);
   });
 
   it("loopback: dois HolePunchers no mesmo host conseguem se conectar", (done) => {

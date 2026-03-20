@@ -1,4 +1,3 @@
-import dgram from "node:dgram";
 import { Endpoint } from "../transports/transport.js";
 
 export const PROBE_MAGIC = "__eden_punch__";
@@ -7,7 +6,11 @@ export const PROBE_MAGIC = "__eden_punch__";
 // que o peer remoto também detecte a resposta (simetria do hole punch)
 const SYMMETRY_GRACE_MS = 300;
 
-type DgramSocket = Pick<dgram.Socket, "send" | "on">;
+interface DgramSocket {
+  send(msg: Buffer, port: number, host: string): void;
+  on(event: "message", handler: (msg: Buffer, rinfo: { address: string; port: number }) => void): void;
+  off(event: "message", handler: (msg: Buffer, rinfo: { address: string; port: number }) => void): void;
+}
 
 interface HolePuncherOptions {
   timeoutMs?: number;
@@ -39,22 +42,27 @@ export class HolePuncher {
         }
       }, probeIntervalMs);
 
-      this.socket.on("message", (msg: Buffer) => {
+      const onMessage = (msg: Buffer, rinfo: { address: string; port: number }) => {
         if (msg.toString() !== PROBE_MAGIC || resolved) return;
+        if (rinfo.address !== remote.host || rinfo.port !== remote.port) return;
 
         resolved = true;
         clearTimeout(timer);
+        this.socket.off("message", onMessage);
 
         // Continua enviando probes brevemente para garantir simetria
         setTimeout(() => clearInterval(interval), SYMMETRY_GRACE_MS);
         resolve(true);
-      });
+      };
+
+      this.socket.on("message", onMessage);
 
       try { this.socket.send(probe, remote.port, remote.host); } catch { /* socket fechado */ }
 
       const timer = setTimeout(() => {
         if (resolved) return;
         resolved = true;
+        this.socket.off("message", onMessage);
         clearInterval(interval);
         resolve(false);
       }, timeoutMs);
