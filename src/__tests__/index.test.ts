@@ -15,8 +15,9 @@ import {
   decrypt,
   createIdentity,
   derivePeerId,
+  MeshRelay,
 } from "../index.js";
-import type { EventEnvelope, EdenTransport, Endpoint, Identity } from "../index.js";
+import type { EventEnvelope, EdenTransport, Endpoint, Identity, MeshRelayOptions } from "../index.js";
 
 describe("public API", () => {
   it("exports Eden", () => expect(Eden).toBeDefined());
@@ -86,5 +87,16 @@ describe("public API", () => {
       secretKey: new Uint8Array(32),
     };
     expect(identity.publicKey.length).toBe(32);
+  });
+
+  it("exports MeshRelay", () => expect(MeshRelay).toBeDefined());
+
+  it("MeshRelayOptions type is usable", () => {
+    const opts: MeshRelayOptions = {
+      transport: { send: () => {}, bind: () => {}, close: () => {} },
+      peerId: "test",
+      onMessage: () => {},
+    };
+    expect(opts.peerId).toBe("test");
   });
 });

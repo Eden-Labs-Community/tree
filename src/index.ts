@@ -17,6 +17,9 @@ export { MultiP2PTransport } from "./transports/p2p/multi-p2p-transport.js";
 export { SignalingSentinel } from "./signaling/signaling-sentinel.js";
 export { SentinelElection, SENTINEL_HEARTBEAT_MAGIC } from "./sentinel/sentinel-election.js";
 
+export { MeshRelay } from "./mesh/mesh-relay.js";
+export type { MeshRelayOptions } from "./mesh/mesh-relay.js";
+
 export { encrypt, decrypt } from "./crypto/box.js";
 export { createIdentity, derivePeerId } from "./crypto/identity.js";
 export type { Identity } from "./crypto/identity.js";

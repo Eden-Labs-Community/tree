@@ -79,6 +79,16 @@ Geração e persistência de par de chaves + derivação determinística de peer
 - Chaves salvas como hex no JSON; segunda chamada retorna as mesmas chaves (persistência)
 - `derivePeerId(publicKey)` → SHA-256 hex string (64 chars) — determinístico
 
+### `mesh/mesh-relay.ts`
+Camada de flooding multi-hop entre Eden e transport. Opt-in.
+- `MeshRelay({ transport, peerId, maxTtl?, onMessage })` — instancia relay
+- `bind()` — registra handler no transport
+- `emit(msg)` — adiciona `ttl: maxTtl` e `origin: peerId` se ausentes, marca como visto, envia
+- Recebimento: deduplica por `id` → descarta se `ttl <= 0` → entrega ao app → forward com `ttl - 1`
+- ACKs (`__ack__`) passam para o app mas NÃO são propagados
+- Non-JSON (probes, heartbeats) passam como-is sem forwarding
+- Usa `Deduplicator` próprio (instância separada do Bus)
+
 ### `envelope/envelope.ts`
 Fábrica e tipo do `EventEnvelope`. Valida o formato do tipo antes de criar.
 - `createEnvelope({ type, payload, room? })` → `EventEnvelope`
@@ -336,6 +346,8 @@ src/
   crypto/
     box.ts                    ← encrypt/decrypt NaCl box (Curve25519 + XSalsa20 + Poly1305)
     identity.ts               ← createIdentity + derivePeerId (SHA-256)
+  mesh/
+    mesh-relay.ts             ← flooding multi-hop (dedup, TTL, forwarding)
   signaling/
     signaling-client.ts       ← WebSocket para troca de endpoints
     signaling-sentinel.ts     ← conexão persistente com signaling (reconexão automática)
@@ -424,6 +436,14 @@ Overhead do hole punch pós-conexão é negligenciável. Relay tem ~2× overhead
 - [x] `MultiP2PTransport.bind()` filtra heartbeats antes de entregar ao app (mesmo padrão de `PROBE_MAGIC` e `STUN_MAGIC_COOKIE`)
 - [x] `removePeer()` com `peers.size === 0` para election — mesh morta, sem sentido ser sentinel
 - [x] `onPromoted` cria `SignalingSentinel`; `onDemoted` destrói — sentinel só existe no peer ativo
+
+### Broadcast Mesh
+- [x] `MeshRelay` — camada de flooding separada do transport (composição, não herança)
+- [x] Flooding com deduplicação por UUID + TTL como defesa em profundidade (default 10 hops)
+- [x] ACKs e mensagens de controle (probes, heartbeats) NÃO propagados pela mesh
+- [x] `maxPeers` no `MultiP2PTransport` (default 10) — rejeita `addPeer()` acima do limite
+- [x] Envelope backward compatible — `ttl` e `origin` são campos opcionais
+- [x] Mesh é opt-in — Eden sem MeshRelay funciona normalmente
 
 ### Criptografia
 - [x] NaCl box (Curve25519 + XSalsa20 + Poly1305) via `tweetnacl` — zero deps nativas
