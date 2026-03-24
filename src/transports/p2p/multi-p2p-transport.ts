@@ -158,7 +158,8 @@ export class MultiP2PTransport implements EdenTransport {
 
     for (let i = 0; i < maxRetries; i++) {
       try {
-        remoteEndpoint = await signaling.requestConnect(myId, targetId);
+        const result = await signaling.requestConnect(myId, targetId);
+        remoteEndpoint = result.endpoint;
         break;
       } catch {
         if (i < maxRetries - 1) {

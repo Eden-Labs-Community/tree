@@ -56,10 +56,10 @@ describe("SignalingClient", () => {
     const client = new SignalingClient(`ws://127.0.0.1:${port}`);
 
     await client.register("peer-b", { host: "5.6.7.8", port: 9000 });
-    const endpoint = await client.requestConnect("peer-a", "peer-b");
+    const result = await client.requestConnect("peer-a", "peer-b");
 
-    expect(endpoint.host).toBe("5.6.7.8");
-    expect(endpoint.port).toBe(9000);
+    expect(result.endpoint.host).toBe("5.6.7.8");
+    expect(result.endpoint.port).toBe(9000);
     client.close();
   });
 
@@ -129,6 +129,70 @@ describe("SignalingClient", () => {
     await new Promise<void>((resolve) => leakServer.close(() => resolve()));
   });
 
+  it("register envia publicKey junto com peerId e endpoint", async () => {
+    // Server que captura o que recebeu
+    const capturedServer = new WebSocketServer({ port: 0 });
+    const capturedPort = await new Promise<number>((resolve) => {
+      capturedServer.on("listening", () => {
+        resolve((capturedServer.address() as { port: number }).port);
+      });
+    });
+
+    let capturedMsg: any = null;
+    capturedServer.on("connection", (ws: WebSocket) => {
+      ws.on("message", (data: Buffer) => {
+        capturedMsg = JSON.parse(data.toString());
+        ws.send(JSON.stringify({ type: "registered" }));
+      });
+    });
+
+    const client = new SignalingClient(`ws://127.0.0.1:${capturedPort}`);
+    await client.register("peer-pk", { host: "1.2.3.4", port: 5000 }, "aabbccdd");
+
+    expect(capturedMsg.publicKey).toBe("aabbccdd");
+    expect(capturedMsg.peerId).toBe("peer-pk");
+
+    client.close();
+    await new Promise<void>((resolve) => capturedServer.close(() => resolve()));
+  });
+
+  it("requestConnect retorna endpoint and publicKey", async () => {
+    // Server that returns publicKey in peer_endpoint
+    const pkServer = new WebSocketServer({ port: 0 });
+    const pkPort = await new Promise<number>((resolve) => {
+      pkServer.on("listening", () => {
+        resolve((pkServer.address() as { port: number }).port);
+      });
+    });
+
+    pkServer.on("connection", (ws: WebSocket) => {
+      ws.on("message", (data: Buffer) => {
+        const msg = JSON.parse(data.toString());
+        if (msg.type === "register") {
+          ws.send(JSON.stringify({ type: "registered" }));
+        }
+        if (msg.type === "request_connect") {
+          ws.send(JSON.stringify({
+            type: "peer_endpoint",
+            endpoint: { host: "5.6.7.8", port: 9000 },
+            publicKey: "deadbeef",
+          }));
+        }
+      });
+    });
+
+    const client = new SignalingClient(`ws://127.0.0.1:${pkPort}`);
+    await client.register("peer-a", { host: "1.2.3.4", port: 5000 });
+    const result = await client.requestConnect("peer-a", "peer-b");
+
+    expect(result.endpoint.host).toBe("5.6.7.8");
+    expect(result.endpoint.port).toBe(9000);
+    expect(result.publicKey).toBe("deadbeef");
+
+    client.close();
+    await new Promise<void>((resolve) => pkServer.close(() => resolve()));
+  });
+
   it("dois peers distintos conseguem trocar endpoints", async () => {
     const clientA = new SignalingClient(`ws://127.0.0.1:${port}`);
     const clientB = new SignalingClient(`ws://127.0.0.1:${port}`);
@@ -136,11 +200,11 @@ describe("SignalingClient", () => {
     await clientA.register("peer-aa", { host: "10.0.0.1", port: 4000 });
     await clientB.register("peer-bb", { host: "10.0.0.2", port: 4001 });
 
-    const endpointOfA = await clientB.requestConnect("peer-bb", "peer-aa");
-    const endpointOfB = await clientA.requestConnect("peer-aa", "peer-bb");
+    const resultA = await clientB.requestConnect("peer-bb", "peer-aa");
+    const resultB = await clientA.requestConnect("peer-aa", "peer-bb");
 
-    expect(endpointOfA).toEqual({ host: "10.0.0.1", port: 4000 });
-    expect(endpointOfB).toEqual({ host: "10.0.0.2", port: 4001 });
+    expect(resultA.endpoint).toEqual({ host: "10.0.0.1", port: 4000 });
+    expect(resultB.endpoint).toEqual({ host: "10.0.0.2", port: 4001 });
 
     clientA.close();
     clientB.close();

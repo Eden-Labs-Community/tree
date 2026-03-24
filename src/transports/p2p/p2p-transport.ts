@@ -78,7 +78,8 @@ export class P2PTransport implements EdenTransport {
 
     for (let i = 0; i < maxRetries; i++) {
       try {
-        remoteEndpoint = await signaling.requestConnect(this.peerId, targetPeerId);
+        const result = await signaling.requestConnect(this.peerId, targetPeerId);
+        remoteEndpoint = result.endpoint;
         break;
       } catch {
         if (i < maxRetries - 1) {

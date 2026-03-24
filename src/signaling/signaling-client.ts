@@ -4,8 +4,13 @@ import { EdenSignalingError } from "../errors/errors.js";
 
 type ServerMessage =
   | { type: "registered" }
-  | { type: "peer_endpoint"; endpoint: Endpoint }
+  | { type: "peer_endpoint"; endpoint: Endpoint; publicKey?: string }
   | { type: "error"; reason: string };
+
+export interface ConnectResult {
+  endpoint: Endpoint;
+  publicKey?: string;
+}
 
 interface SignalingClientOptions {
   timeoutMs?: number;
@@ -24,15 +29,24 @@ export class SignalingClient {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   }
 
-  async register(peerId: string, endpoint: Endpoint): Promise<void> {
+  async register(peerId: string, endpoint: Endpoint, publicKey?: string): Promise<void> {
     const ws = await this.connect();
-    await this.send(ws, { type: "register", peerId, endpoint }, "registered");
+    const payload: Record<string, unknown> = { type: "register", peerId, endpoint };
+    if (publicKey !== undefined) {
+      payload["publicKey"] = publicKey;
+    }
+    await this.send(ws, payload, "registered");
   }
 
-  async requestConnect(myId: string, targetId: string): Promise<Endpoint> {
+  async requestConnect(myId: string, targetId: string): Promise<ConnectResult> {
     const ws = await this.connect();
     const msg = await this.send(ws, { type: "request_connect", myId, targetId }, "peer_endpoint");
-    return (msg as { type: "peer_endpoint"; endpoint: Endpoint }).endpoint;
+    const resp = msg as { type: "peer_endpoint"; endpoint: Endpoint; publicKey?: string };
+    const result: ConnectResult = { endpoint: resp.endpoint };
+    if (resp.publicKey !== undefined) {
+      result.publicKey = resp.publicKey;
+    }
+    return result;
   }
 
   close(): void {
