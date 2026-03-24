@@ -16,8 +16,10 @@ import {
   createIdentity,
   derivePeerId,
   MeshRelay,
+  MessageRouter,
+  RoomManager,
 } from "../index.js";
-import type { EventEnvelope, EdenTransport, Endpoint, Identity, MeshRelayOptions } from "../index.js";
+import type { EventEnvelope, EdenTransport, Endpoint, Identity, MeshRelayOptions, ConnectResult } from "../index.js";
 
 describe("public API", () => {
   it("exports Eden", () => expect(Eden).toBeDefined());
@@ -98,5 +100,13 @@ describe("public API", () => {
       onMessage: () => {},
     };
     expect(opts.peerId).toBe("test");
+  });
+
+  it("exports MessageRouter", () => expect(MessageRouter).toBeDefined());
+  it("exports RoomManager", () => expect(RoomManager).toBeDefined());
+
+  it("ConnectResult type is usable", () => {
+    const result: ConnectResult = { endpoint: { host: "1.2.3.4", port: 5000 }, publicKey: "abc" };
+    expect(result.endpoint.host).toBe("1.2.3.4");
   });
 });

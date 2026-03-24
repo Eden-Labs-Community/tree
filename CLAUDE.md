@@ -89,6 +89,22 @@ Camada de flooding multi-hop entre Eden e transport. Opt-in.
 - Non-JSON (probes, heartbeats) passam como-is sem forwarding
 - Usa `Deduplicator` próprio (instância separada do Bus)
 
+### `routing/message-router.ts`
+Decisão de roteamento: server vs mesh.
+- `MessageRouter({ server, mesh })` — instancia router
+- `send(targetPeerId, payload)` — server up → send via server; server down ou falha → mesh flooding
+- `broadcast(payload)` — sempre via mesh
+- Transição transparente — aplicação não precisa saber qual caminho foi usado
+
+### `routing/room-manager.ts`
+Gerenciamento de membership de rooms no peer.
+- `join(roomId)` — entra na room, anuncia pros membros via router.send
+- `leave(roomId)` — sai da room, anuncia saída
+- `addMember(roomId, peerId)` / `removeMember(roomId, peerId)` — tracking de membros remotos
+- `sendToRoom(roomId, payload)` — poucos membros → N sends 1:1; muitos → broadcast
+- `getRooms()` / `getMembers(roomId)` — consulta estado
+- `maxPeersPerRoom` (default 100), `broadcastThreshold` (default 50)
+
 ### `envelope/envelope.ts`
 Fábrica e tipo do `EventEnvelope`. Valida o formato do tipo antes de criar.
 - `createEnvelope({ type, payload, room? })` → `EventEnvelope`
@@ -348,6 +364,9 @@ src/
     identity.ts               ← createIdentity + derivePeerId (SHA-256)
   mesh/
     mesh-relay.ts             ← flooding multi-hop (dedup, TTL, forwarding)
+  routing/
+    message-router.ts         ← decisão server vs mesh
+    room-manager.ts           ← membership de rooms no peer
   signaling/
     signaling-client.ts       ← WebSocket para troca de endpoints
     signaling-sentinel.ts     ← conexão persistente com signaling (reconexão automática)
@@ -436,6 +455,23 @@ Overhead do hole punch pós-conexão é negligenciável. Relay tem ~2× overhead
 - [x] `MultiP2PTransport.bind()` filtra heartbeats antes de entregar ao app (mesmo padrão de `PROBE_MAGIC` e `STUN_MAGIC_COOKIE`)
 - [x] `removePeer()` com `peers.size === 0` para election — mesh morta, sem sentido ser sentinel
 - [x] `onPromoted` cria `SignalingSentinel`; `onDemoted` destrói — sentinel só existe no peer ativo
+
+### Roteamento e Rooms
+- [x] `MessageRouter` decide server vs mesh automaticamente — server up → send 1:1; down → mesh flooding
+- [x] Fallback automático: se server.send falha, cai pra mesh
+- [x] Broadcast sempre via mesh (flooding)
+- [x] `RoomManager` — membership local, anúncios via router.send
+- [x] Small rooms → N sends 1:1 via server; large rooms → broadcast via mesh
+- [x] `maxPeersPerRoom` configurável (default 100), `broadcastThreshold` (default 50)
+- [x] Server não sabe de rooms — toda lógica no peer
+
+### Protocolo (novo)
+- [x] `SignalingClient.register()` aceita e envia `publicKey`
+- [x] `SignalingClient.requestConnect()` retorna `ConnectResult { endpoint, publicKey? }`
+- [x] `RelayClient` usa `send`/`message` (não mais `relay`/`data`)
+- [x] `RelayClient` envia `join` em vez de `identify` — WS associado no join
+- [x] `MultiP2PTransport.addPeer()` aceita `publicKey`, armazena via `getPublicKey(peerId)`
+- [x] Fix `MaxListenersExceededWarning` — listener removido no timeout do `requestConnect`
 
 ### Broadcast Mesh
 - [x] `MeshRelay` — camada de flooding separada do transport (composição, não herança)
